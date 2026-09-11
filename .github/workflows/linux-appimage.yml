@@ -49,8 +49,6 @@ jobs:
             libsratom-dev \
             libtag1-dev \
             libusb-1.0-0-dev \
-            libvamp-hostsdk-dev \
-            libvamp-sdk-dev \
             libwebsockets-dev \
             libxml2-dev \
             python3 \
@@ -58,6 +56,7 @@ jobs:
             python3-setuptools \
             rubberband-cli \
             librubberband-dev \
+            vamp-plugin-sdk \
             xvfb \
             yasm
 
