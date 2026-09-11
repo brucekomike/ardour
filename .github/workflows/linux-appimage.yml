@@ -1,0 +1,71 @@
+name: Linux AppImage
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-demo-appimage:
+    runs-on: ubuntu-22.04
+    env:
+      DEBIAN_FRONTEND: noninteractive
+      WAF_EXTRA_ARGS: --with-backends=jack,alsa,pulseaudio,dummy
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            curl \
+            git \
+            itstool \
+            libarchive-dev \
+            libasound2-dev \
+            libaubio-dev \
+            libboost-dev \
+            libcurl4-gnutls-dev \
+            libfftw3-dev \
+            libflac-dev \
+            libfontconfig1-dev \
+            libglibmm-2.4-dev \
+            libgtk2.0-dev \
+            libgtkmm-2.4-dev \
+            libjack-jackd2-dev \
+            liblilv-dev \
+            liblo-dev \
+            liblrdf0-dev \
+            libogg-dev \
+            libpulse-dev \
+            libsamplerate0-dev \
+            libserd-dev \
+            libsigc++-2.0-dev \
+            libsndfile1-dev \
+            libsord-dev \
+            libsratom-dev \
+            libtag1-dev \
+            libusb-1.0-0-dev \
+            libwebsockets-dev \
+            libxml2-dev \
+            python3 \
+            python3-dev \
+            python3-setuptools \
+            rubberband-cli \
+            librubberband-dev \
+            vamp-plugin-sdk \
+            xvfb \
+            yasm
+
+      - name: Build demo AppImage
+        run: /home/runner/work/ardour/ardour/tools/linux_packaging/build_appimage.sh
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ardour-demo-appimage
+          path: /home/runner/work/ardour/ardour/build/appimage/out/*.AppImage
+          if-no-files-found: error
