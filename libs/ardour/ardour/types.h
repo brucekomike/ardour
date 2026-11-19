@@ -47,10 +47,6 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
-
-#ifndef _WINSOCKAPI_
-#define _WINSOCKAPI_
-#endif
 #endif
 
 #include "temporal/bbt_time.h"
@@ -664,6 +660,7 @@ enum SyncSource {
 	MTC,
 	MIDIClock,
 	LTC,
+	WallClock,
 };
 
 enum TransportRequestSource {
@@ -673,6 +670,7 @@ enum TransportRequestSource {
 	TRS_LTC,
 	TRS_MMC,
 	TRS_UI,
+	TRS_WallClock,
 };
 
 enum TransportRequestType {
@@ -751,12 +749,6 @@ enum PluginGUIBehavior {
 	PluginGUIHide,
 	PluginGUIDestroyAny,
 	PluginGUIDestroyVST,
-};
-
-enum AppleNSGLViewMode {
-	NSGLHiRes,
-	NSGLLoRes,
-	NSGLDisable,
 };
 
 /** A struct used to describe changes to processors in a route.
@@ -1058,6 +1050,9 @@ enum TuningSystem {
 	TwelveTone,
 };
 
+enum SurfaceCallbackType {
+	CreateSession,
+};
 
 } // namespace ARDOUR
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016,2023 Robin Gareus <robin@gareus.org>
+ * Copyright (C) 2016-2026 Robin Gareus <robin@gareus.org>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -18,11 +18,13 @@
 #ifndef _lufs_meter_h_
 #define _lufs_meter_h_
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
 
 #include "pbd/stack_allocator.h"
+#include "pbd/ringbuffer.h"
 
 #include "ardour/libardour_visibility.h"
 
@@ -31,20 +33,46 @@ namespace ARDOUR {
 class LIBARDOUR_API LUFSMeter
 {
 public:
-	LUFSMeter (double samplerate, uint32_t n_channels);
+	LUFSMeter (double samplerate, uint32_t n_channels, bool with_hist = false);
 	LUFSMeter (LUFSMeter const& other) = delete;
 	~LUFSMeter ();
 
 	void run (float const** data, uint32_t n_samples);
 	void reset ();
+	void integrate (bool);
+	bool integrating () const;
 
 	float integrated_loudness () const;
 	float momentary () const;
 	float max_momentary () const;
-	float dbtp () const;
+	float short_term () const;
+	float max_short_term () const;
+	float lu_range () const;
+	void  lu_range_min_max (float& range_min, float& range_max) const;
+	float dbtp ();
+	float max_dbtp () const;
+
+	struct LUHistory {
+		float integrated;
+		float short_term;
+		float momentary;
+	};
+
+	size_t hist_read (LUHistory* dest, size_t cnt) {
+		return _rb.read (dest, cnt);
+	}
+
+	size_t hist_read_space () const {
+		return _rb.read_space ();
+	}
+
+	void host_increment_read_idx (size_t cnt) {
+		_rb.increment_read_idx (cnt);
+	}
 
 private:
 	void init ();
+	void clear ();
 
 	float process (float const** data, const uint32_t n_samples, uint32_t offset);
 	float sumfrag (uint32_t) const;
@@ -52,6 +80,7 @@ private:
 	void  calc_true_peak (float const** data, const uint32_t n_samples);
 	float upsample_x4 (int chn, float const x);
 	float upsample_x2 (int chn, float const x);
+
 	std::function< float(int, const float) > upsample;
 
 	const float _g[5] = { 1.0, 1.0, 1.0, 1.41, 1.41 };
@@ -71,15 +100,26 @@ private:
 	float    _frag_pwr;
 	uint32_t _block_cnt;
 	float    _block_pwr;
-	float    _power[8];
+	float    _power[32];
 	uint32_t _pow_idx;
 	float    _thresh_rel;
+	uint32_t _lu_s_div;
 
 	float    _momentary_l;
+	float    _short_l;
+
+	float    _range_min;
+	float    _range_max;
 
 	float    _maxloudn_M;
+	float    _maxloudn_S;
 	float    _integrated;
 	float    _dbtp;
+	float    _max_dbtp;
+
+	std::atomic<bool> _rst_dbtp;
+	std::atomic<bool> _rst_lufs;
+	std::atomic<bool> _integrate;
 
 #if defined(_MSC_VER)
 	typedef std::map<int, uint32_t> History;
@@ -87,7 +127,10 @@ private:
 	typedef std::map<int, uint32_t, std::less<int>, PBD::StackAllocator<std::pair<const int, uint32_t>, 1000>> History;
 #endif
 
-	History _hist;
+	History _hist_m;
+	History _hist_s;
+
+	std::map<int, float> power_table;
 
 	struct FilterState {
 		void reset ();
@@ -98,6 +141,10 @@ private:
 
 	FilterState _fst[5];
 	float*      _z[5];
+
+	bool _lu_history;
+
+	PBD::RingBuffer<LUHistory> _rb;
 };
 
 } // namespace ARDOUR

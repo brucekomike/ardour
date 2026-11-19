@@ -455,6 +455,7 @@ OSC::register_callbacks()
 		REGISTER_CALLBACK (serv, X_("/transport_speed"), "", transport_speed);
 		REGISTER_CALLBACK (serv, X_("/record_enabled"), "", record_enabled);
 		REGISTER_CALLBACK (serv, X_("/is_recording"), "", is_recording);
+		REGISTER_CALLBACK (serv, X_("/is_recording"), "f", is_recording);
 		REGISTER_CALLBACK (serv, X_("/set_transport_speed"), "f", set_transport_speed);
 		// locate ii is position and bool roll
 		REGISTER_CALLBACK (serv, X_("/locate"), "ii", locate);
@@ -490,10 +491,15 @@ OSC::register_callbacks()
 		REGISTER_CALLBACK (serv, X_("/rec_enable_toggle"), "f", rec_enable_toggle);
 		REGISTER_CALLBACK (serv, X_("/toggle_all_rec_enables"), "", toggle_all_rec_enables);
 		REGISTER_CALLBACK (serv, X_("/toggle_all_rec_enables"), "f", toggle_all_rec_enables);
+		REGISTER_CALLBACK (serv, X_("/arm_tracks_toggle_punch"), "", arm_tracks_toggle_punch);
+		REGISTER_CALLBACK (serv, X_("/arm_tracks_toggle_punch"), "f", arm_tracks_toggle_punch);
+		REGISTER_CALLBACK (serv, X_("/toggle_punch"), "", toggle_punch);
+		REGISTER_CALLBACK (serv, X_("/toggle_punch"), "f", toggle_punch);
 		REGISTER_CALLBACK (serv, X_("/all_tracks_rec_in"), "", all_tracks_rec_in);
 		REGISTER_CALLBACK (serv, X_("/all_tracks_rec_in"), "f", all_tracks_rec_in);
 		REGISTER_CALLBACK (serv, X_("/all_tracks_rec_out"), "", all_tracks_rec_out);
 		REGISTER_CALLBACK (serv, X_("/all_tracks_rec_out"), "f", all_tracks_rec_out);
+		REGISTER_CALLBACK (serv, X_("/cancel_all_solos"), "", cancel_all_solos);
 		REGISTER_CALLBACK (serv, X_("/cancel_all_solos"), "f", cancel_all_solos);
 		REGISTER_CALLBACK (serv, X_("/remove_marker"), "", remove_marker_at_playhead);
 		REGISTER_CALLBACK (serv, X_("/remove_marker"), "f", remove_marker_at_playhead);
@@ -1689,56 +1695,56 @@ OSC::surface_parse (const char *path, const char* types, lo_arg **argv, int argc
 				} else {
 					linkid = argv[8]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 8:
 				if (types[7] == 'f') {
 					linkset = (int) argv[7]->f;
 				} else {
 					linkset = argv[7]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 7:
 				if (types[6] == 'f') {
 					port = (int) argv[6]->f;
 				} else {
 					port = argv[6]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 6:
 				if (types[5] == 'f') {
 					pi_page = (int) argv[5]->f;
 				} else {
 					pi_page = argv[5]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 5:
 				if (types[4] == 'f') {
 					se_page = (int) argv[4]->f;
 				} else {
 					se_page = argv[4]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 4:
 				if (types[3] == 'f') {
 					fadermode = (int) argv[3]->f;
 				} else {
 					fadermode = argv[3]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 3:
 				if (types[2] == 'f') {
 					feedback = (int) argv[2]->f;
 				} else {
 					feedback = argv[2]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 2:
 				if (types[1] == 'f') {
 					strip_types = (int) argv[1]->f;
 				} else {
 					strip_types = argv[1]->i;
 				}
-				/* fallthrough */
+				[[fallthrough]];
 			case 1:
 				bank_size = data;
 				set_surface_port (port, msg);

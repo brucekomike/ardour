@@ -409,7 +409,9 @@ class EditingContext : public ARDOUR::SessionHandlePtr, public AxisViewProvider,
 	ARDOUR::Strum* get_strum_op (bool, bool);
 	void apply_midi_note_edit_op (ARDOUR::MidiOperator& op, const RegionSelection& rs);
 	void apply_midi_note_edit_op (ARDOUR::MidiOperator& op, const MidiViews& rs);
+	void apply_midi_note_edit_op_no_selection (ARDOUR::MidiOperator& op, const MidiViews& rs);
 	PBD::Command* apply_midi_note_edit_op_to_region (ARDOUR::MidiOperator& op, MidiView& mrv);
+	PBD::Command* apply_midi_note_edit_op_to_region_no_selection (ARDOUR::MidiOperator& op, MidiView& mrv);
 	virtual void midi_action (void (MidiView::*method)());
 	std::vector<MidiView*> filter_to_unique_midi_region_views (RegionSelection const & rs) const;
 	std::vector<MidiView*> filter_to_unique_midi_region_views (MidiViews const & ms) const;
@@ -512,6 +514,10 @@ class EditingContext : public ARDOUR::SessionHandlePtr, public AxisViewProvider,
 	void enable_automation_bindings ();
 	void disable_automation_bindings ();
 
+	void edit_control_point (ArdourCanvas::Item*);
+	void remove_control_point (ArdourCanvas::Item* item);
+	virtual bool can_remove_control_point (ArdourCanvas::Item*) { return true; }
+
 	/* playhead/screen stuff */
 
 	void set_stationary_playhead (bool yn);
@@ -529,8 +535,6 @@ class EditingContext : public ARDOUR::SessionHandlePtr, public AxisViewProvider,
 		std::shared_ptr<Evoral::ControlList> copy; ///< copied events for the cut buffer
 	};
 
-	virtual Gtk::Menu* get_single_region_context_menu ();
-
 	bool get_midi_chord (int root_pitch, std::vector<int>& pitches, bool& arpeggiate) const { return false; }
 	Glib::RefPtr<Gtk::RadioAction> draw_chord_action (int num);
 	Glib::RefPtr<Gtk::RadioAction> no_chord_action () { return _no_chord_action; }
@@ -546,6 +550,8 @@ class EditingContext : public ARDOUR::SessionHandlePtr, public AxisViewProvider,
 
 	void pianoroll_edit ();
 	virtual void midi_view_selection_changed (SimpleMidiNoteSelection& selection) {}
+
+	sigc::connection region_selection_changed_connection;
 
   protected:
 	std::string _name;
@@ -803,6 +809,8 @@ class EditingContext : public ARDOUR::SessionHandlePtr, public AxisViewProvider,
 	sigc::connection autoscroll_connection;
 	bool autoscroll_horizontal_allowed;
 	bool autoscroll_vertical_allowed;
+	bool autoscroll_horizontal_active;
+	bool autoscroll_vertical_active;
 	uint32_t autoscroll_cnt;
 	ArdourCanvas::Rect autoscroll_boundary;
 

@@ -31,6 +31,7 @@
 #include <glibmm.h>
 
 #include "pbd/cpus.h"
+#include "pbd/file_utils.h"
 #include "pbd/history_owner.h"
 #include "pbd/stateful_diff_command.h"
 #include "pbd/openuri.h"
@@ -258,7 +259,7 @@ CLASSINFO(TrackViewList);
 CLASSINFO(UIConfiguration);
 
 /* this needs to match gtk2_ardour/luasignal.h */
-CLASSKEYS(std::bitset<52ul>); // LuaSignal::LAST_SIGNAL
+CLASSKEYS(std::bitset<53ul>); // LuaSignal::LAST_SIGNAL
 
 CLASSKEYS(void);
 CLASSKEYS(float);
@@ -309,6 +310,7 @@ CLASSKEYS(ARDOUR::PortEngine);
 CLASSKEYS(ARDOUR::PortManager);
 CLASSKEYS(ARDOUR::PresentationInfo);
 CLASSKEYS(ARDOUR::RCConfiguration);
+CLASSKEYS(ARDOUR::RouteProcessorChange);
 CLASSKEYS(ARDOUR::Session);
 CLASSKEYS(ARDOUR::SessionConfiguration);
 CLASSKEYS(ARDOUR::SimpleExport);
@@ -514,6 +516,12 @@ LuaBindings::common (lua_State* L)
 
 		.addFunction ("open_uri", (bool (*) (const std::string&))&PBD::open_uri)
 		.addFunction ("open_uri", &PBD::open_folder)
+
+		.addFunction ("equivalent_paths", &PBD::equivalent_paths)
+		.addFunction ("exists_and_writable", &PBD::exists_and_writable)
+		.addFunction ("clear_directory", &PBD::clear_directory)
+		.addFunction ("remove_directory", &PBD::remove_directory)
+		.addFunction ("tmp_writable_directory", &PBD::tmp_writable_directory)
 
 		.beginClass <PBD::ID> ("ID")
 		.addConstructor <void (*) (std::string)> ()
@@ -1455,8 +1463,13 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("is_private_route", &Stripable::is_private_route)
 		.addFunction ("is_master", &Stripable::is_master)
 		.addFunction ("is_monitor", &Stripable::is_monitor)
+		.addFunction ("is_foldbackbus", &Stripable::is_foldbackbus)
 		.addFunction ("is_surround_master", &Stripable::is_surround_master)
+		.addFunction ("is_main_bus", &Stripable::is_main_bus)
+		.addFunction ("is_singleton", &Stripable::is_singleton)
+		.addFunction ("is_transient", &Stripable::is_transient)
 		.addFunction ("is_hidden", &Stripable::is_hidden)
+		.addFunction ("recordable", &Stripable::recordable)
 		.addFunction ("is_selected", &Stripable::is_selected)
 		.addFunction ("gain_control", &Stripable::gain_control)
 		.addFunction ("solo_control", &Stripable::solo_control)
@@ -1690,6 +1703,7 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("sync_marked", &Region::sync_marked)
 		.addFunction ("external", &Region::external)
 		.addFunction ("import", &Region::import)
+		.addFunction ("transient", &Region::transient)
 		.addFunction ("covers", (bool (Region::*)(Temporal::timepos_t const &) const) &Region::covers)
 		.addFunction ("at_natural_position", &Region::at_natural_position)
 		.addFunction ("is_compound", &Region::is_compound)
@@ -1780,6 +1794,7 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("timeline_position", &Source::natural_position) /* duplicate */
 		.addFunction ("use_count", &Source::use_count)
 		.addFunction ("used", &Source::used)
+		.addFunction ("transient", &Source::transient)
 		.addFunction ("ancestor_name", &Source::ancestor_name)
 		.addFunction ("captured_xruns", &Source::captured_xruns)
 		.endClass ()
@@ -2629,6 +2644,17 @@ LuaBindings::common (lua_State* L)
 		.addConst ("IsTerminal", ARDOUR::PortFlags(IsTerminal))
 		.endNamespace ()
 
+		.beginNamespace ("RouteProcessorChange")
+		.addConst ("NoProcessorChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::NoProcessorChange))
+		.addConst ("MeterPointChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::MeterPointChange))
+		.addConst ("RealTimeChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::RealTimeChange))
+		.addConst ("GeneralChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::GeneralChange))
+		.addConst ("SendReturnChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::SendReturnChange))
+		.addConst ("CustomPinChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::CustomPinChange))
+		.addConst ("ParameterNameChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::ParameterNameChange))
+		.addConst ("PortNameChange", ARDOUR::RouteProcessorChange::Type(RouteProcessorChange::PortNameChange))
+		.endNamespace ()
+
 		.beginNamespace ("MidiPortFlags")
 		.addConst ("MidiPortMusic", ARDOUR::MidiPortFlags(MidiPortMusic))
 		.addConst ("MidiPortControl", ARDOUR::MidiPortFlags(MidiPortControl))
@@ -2927,12 +2953,6 @@ LuaBindings::common (lua_State* L)
 		.addConst ("InhibitAlways", ARDOUR::ScreenSaverMode(InhibitAlways))
 		.endNamespace ()
 
-		.beginNamespace ("AppleNSGLViewMode")
-		.addConst ("NSGLHiRes", ARDOUR::AppleNSGLViewMode(NSGLHiRes))
-		.addConst ("NSGLLoRes", ARDOUR::AppleNSGLViewMode(NSGLLoRes))
-		.addConst ("NSGLDisable", ARDOUR::AppleNSGLViewMode(NSGLDisable))
-		.endNamespace ()
-
 		.beginNamespace ("PluginGUIBehavior")
 		.addConst ("PluginGUIHide", ARDOUR::PluginGUIBehavior(PluginGUIHide))
 		.addConst ("PluginGUIDestroyAny", ARDOUR::PluginGUIBehavior(PluginGUIDestroyAny))
@@ -2986,6 +3006,7 @@ LuaBindings::common (lua_State* L)
 		.addConst ("MTC", ARDOUR::SyncSource(MTC))
 		.addConst ("MIDIClock", ARDOUR::SyncSource(MIDIClock))
 		.addConst ("LTC", ARDOUR::SyncSource(LTC))
+		.addConst ("WallClock", ARDOUR::SyncSource(WallClock))
 		.endNamespace ()
 
 		.beginNamespace ("TracksAutoNamingRule")

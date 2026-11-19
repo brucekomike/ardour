@@ -1330,8 +1330,6 @@ Editor::sensitize_all_region_actions (bool s)
 	for (Glib::ListHandle<Glib::RefPtr<Action> >::iterator i = all.begin(); i != all.end(); ++i) {
 		(*i)->set_sensitive (s);
 	}
-
-	_all_region_actions_sensitized = s;
 }
 
 /** Sensitize region-based actions.
@@ -1670,15 +1668,13 @@ Editor::sensitize_the_right_region_actions (bool because_canvas_crossing)
 	}
 
 	_ignore_region_action = false;
-
-	_all_region_actions_sensitized = false;
 }
 
 void
 Editor::region_selection_changed ()
 {
 	_regions->block_change_connection (true);
-	editor_regions_selection_changed_connection.block(true);
+	region_selection_changed_connection.block(true);
 
 	if (_region_selection_change_updates_region_list) {
 		_regions->unselect_all ();
@@ -1693,7 +1689,7 @@ Editor::region_selection_changed ()
 	}
 
 	_regions->block_change_connection (false);
-	editor_regions_selection_changed_connection.block(false);
+	region_selection_changed_connection.block(false);
 
 	sensitize_the_right_region_actions (false);
 
@@ -1951,7 +1947,16 @@ Editor::select_all_within (timepos_t const & start, timepos_t const & end, doubl
 	}
 
 	if (found.empty()) {
-		selection->clear_objects();
+		if (current_mouse_mode() == Editing::MouseContent && selection->regions.size () == 1 && selection->midi_regions ().size () == 1) {
+			/* keep region selection: when edtiing the content of a midi region */
+			selection->clear_points ();
+			selection->clear_lines ();
+			selection->clear_playlists ();
+			selection->clear_midi_notes ();
+			selection->clear_triggers ();
+		} else {
+			selection->clear_objects ();
+		}
 		selection->clear_time ();
 		return;
 	}

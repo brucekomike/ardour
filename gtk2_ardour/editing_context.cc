@@ -39,6 +39,7 @@
 #include "ardour_ui.h"
 #include "automation_line.h"
 #include "control_point.h"
+#include "control_point_dialog.h"
 #include "edit_note_dialog.h"
 #include "editing_context.h"
 #include "editing_convert.h"
@@ -184,8 +185,10 @@ EditingContext::EditingContext (std::string const & name)
 	, horizontal_adjustment (0.0, 0.0, 1e16)
 	, own_bindings (nullptr)
 	, visual_change_queued (false)
-	, autoscroll_horizontal_allowed (false)
-	, autoscroll_vertical_allowed (false)
+	, autoscroll_horizontal_allowed (true)
+	, autoscroll_vertical_allowed (true)
+	, autoscroll_horizontal_active (false)
+	, autoscroll_vertical_active (false)
 	, autoscroll_cnt (0)
 	, _mouse_changed_selection (false)
 	, entered_marker (nullptr)
@@ -278,7 +281,7 @@ EditingContext::EditingContext (std::string const & name)
 	note_mode_button.set_active_color (UIConfiguration::instance().color ("alert:yellow"));
 
 	selection->PointsChanged.connect (sigc::mem_fun(*this, &EditingContext::point_selection_changed));
-	selection->RegionsChanged.connect (sigc::mem_fun(*this, &EditingContext::region_selection_changed));
+	region_selection_changed_connection = selection->RegionsChanged.connect (sigc::mem_fun(*this, &EditingContext::region_selection_changed));
 
 	for (int i = 0; i < 16; i++) {
 		char buf[4];
@@ -1474,13 +1477,12 @@ EditingContext::time_domain () const
 
 	switch (grid_type()) {
 		case GridTypeNone:
-			/* fallthrough */
+			[[fallthrough]];
 		case GridTypeMinSec:
-			/* fallthrough */
+			[[fallthrough]];
 		case GridTypeCDFrame:
-			/* fallthrough */
+			[[fallthrough]];
 		case GridTypeTimecode:
-			/* fallthrough */
 			return Temporal::AudioTime;
 		default:
 			break;
@@ -2092,8 +2094,14 @@ EditingContext::popup_note_context_menu (ArdourCanvas::Item* item, GdkEvent* eve
 	items.push_back(MenuElem(_("Transform..."), sigc::bind(sigc::mem_fun(*this, &EditingContext::transform_regions), mvs)));
 	items.push_back (SeparatorElem());
 	items.push_back(MenuElem(_("Strum Forward"), sigc::bind(sigc::mem_fun(*this, &EditingContext::strum_notes), mvs, true)));
+	if (sel_size < 2) {
+		items.back().set_sensitive (false);
+	}
 	items.push_back(MenuElem(_("Strum Backward"), sigc::bind(sigc::mem_fun(*this, &EditingContext::strum_notes), mvs, false)));
-
+	if (sel_size < 2) {
+		items.back().set_sensitive (false);
+	}
+	
 	_note_context_menu.popup (event->button.button, event->button.time);
 }
 
@@ -2181,6 +2189,11 @@ EditingContext::quantize_region ()
 void
 EditingContext::quantize_regions (const MidiViews& rs)
 {
+	/* Note that the semantics of this are different to
+	   MidiView::quantize_selected_regions(), since it acts on all
+	   (editable) notes in the MidiView.
+	*/
+
 	EC_LOCAL_TEMPO_SCOPE;
 
 	if (rs.empty()) {
@@ -2193,9 +2206,12 @@ EditingContext::quantize_regions (const MidiViews& rs)
 		return;
 	}
 
-	if (!quant->empty()) {
-		apply_midi_note_edit_op (*quant, rs);
+	if (quant->empty()) {
+		delete quant;
+		return;
 	}
+
+	apply_midi_note_edit_op_no_selection (*quant, rs);
 
 	delete quant;
 }
@@ -2344,6 +2360,58 @@ EditingContext::note_edit_done (int r, EditNoteDialog* d)
 	delete d;
 }
 
+void
+EditingContext::edit_control_point (ArdourCanvas::Item* item)
+{
+	ControlPoint* p = reinterpret_cast<ControlPoint *> (item->get_data ("control_point"));
+
+	if (p == 0) {
+		fatal << _("programming error: control point canvas item has no control point object pointer!") << endmsg;
+		abort(); /*NOTREACHED*/
+	}
+
+	std::vector<ControlPoint*> cps;
+
+	for (auto const& cp : selection->points) {
+		if (&cp->line() == &p->line ()) {
+			cps.push_back (cp);
+		}
+	}
+
+	assert (cps.size() > 0);
+
+	ControlPointDialog d (p, cps.size() > 1);
+
+	if (d.run () != RESPONSE_ACCEPT) {
+		return;
+	}
+
+	if (d.all_selected_points ()) {
+		p->line().modify_points_y (cps, d.get_y_fraction ());
+	} else {
+		cps.clear ();
+		cps.push_back (p);
+		p->line().modify_points_y (cps, d.get_y_fraction ());
+	}
+}
+
+void
+EditingContext::remove_control_point (ArdourCanvas::Item* item)
+{
+	if (!can_remove_control_point (item)) {
+		return;
+	}
+
+	ControlPoint* control_point;
+
+	if ((control_point = reinterpret_cast<ControlPoint *> (item->get_data ("control_point"))) == 0) {
+		fatal << _("programming error: control point canvas item has no control point object pointer!") << endmsg;
+		abort(); /*NOTREACHED*/
+	}
+
+	control_point->line().remove_point (*control_point);
+}
+
 PBD::Command*
 EditingContext::apply_midi_note_edit_op_to_region (MidiOperator& op, MidiView& mrv)
 {
@@ -2358,6 +2426,22 @@ EditingContext::apply_midi_note_edit_op_to_region (MidiOperator& op, MidiView& m
 
 	std::vector<Evoral::Sequence<Temporal::Beats>::Notes> v;
 	v.push_back (selected);
+
+	timepos_t pos = mrv.midi_region()->source_position();
+
+	return op (mrv.midi_region()->model(), pos.beats(), v);
+}
+
+PBD::Command*
+EditingContext::apply_midi_note_edit_op_to_region_no_selection (MidiOperator& op, MidiView& mrv)
+{
+	EC_LOCAL_TEMPO_SCOPE;
+
+	Evoral::Sequence<Temporal::Beats>::Notes all_notes;
+	mrv.notes_as_notelist (all_notes);
+
+	std::vector<Evoral::Sequence<Temporal::Beats>::Notes> v;
+	v.push_back (all_notes);
 
 	timepos_t pos = mrv.midi_region()->source_position();
 
@@ -2388,6 +2472,38 @@ EditingContext::apply_midi_note_edit_op (MidiOperator& op, const MidiViews& rs)
 	for (auto & mv : views) {
 
 		Command* cmd = apply_midi_note_edit_op_to_region (op, *mv);
+		if (cmd) {
+			if (!in_command) {
+				begin_reversible_command (op.name ());
+				in_command = true;
+			}
+			(*cmd)();
+			add_command (cmd);
+			}
+	}
+
+	if (in_command) {
+		commit_reversible_command ();
+		_session->set_dirty ();
+	}
+}
+
+void
+EditingContext::apply_midi_note_edit_op_no_selection (MidiOperator& op, const MidiViews& rs)
+{
+	EC_LOCAL_TEMPO_SCOPE;
+
+	if (rs.empty()) {
+		return;
+	}
+
+	bool in_command = false;
+
+	std::vector<MidiView*> views = filter_to_unique_midi_region_views (rs);
+
+	for (auto & mv : views) {
+
+		Command* cmd = apply_midi_note_edit_op_to_region_no_selection (op, *mv);
 		if (cmd) {
 			if (!in_command) {
 				begin_reversible_command (op.name ());
@@ -3048,7 +3164,7 @@ EditingContext::select_automation_line (GdkEventButton* event, ArdourCanvas::Ite
 	al->grab_item().canvas_to_item (mx, my);
 
 	uint32_t before, after;
-	samplecnt_t const  where = (samplecnt_t) floor (canvas_to_timeline (mx) * samples_per_pixel);
+	samplecnt_t const  where = pixel_to_sample (mx);
 
 	if (!al || !al->control_points_adjacent (where, before, after)) {
 		return;
@@ -4192,12 +4308,6 @@ EditingContext::scroll_right_half_page ()
 	} else {
 		reset_x_origin (max_samplepos - current_page_samples());
 	}
-}
-
-Gtk::Menu*
-EditingContext::get_single_region_context_menu ()
-{
-	return nullptr;
 }
 
 void

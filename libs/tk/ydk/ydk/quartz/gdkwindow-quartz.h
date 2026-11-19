@@ -50,8 +50,6 @@ struct _GdkWindowImplQuartz
 
   GdkWindowTypeHint type_hint;
 
-  GdkRegion *paint_clip_region;
-  gint begin_paint_count;
   gint in_paint_rect_count;
 
   GdkWindow *transient_for;
@@ -64,6 +62,8 @@ struct _GdkWindowImplQuartz
   GdkColor background_color;
 
   guint background_color_set : 1;
+
+  CGContextRef *offscreen;
 };
  
 struct _GdkWindowImplQuartzClass 

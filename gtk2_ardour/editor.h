@@ -385,6 +385,7 @@ public:
 	void do_embed (std::vector<std::string>              paths,
 	               Editing::ImportDisposition            disposition,
 	               Editing::ImportMode                   mode,
+	               bool                                  transient,
 	               Temporal::timepos_t&                  pos,
 	               std::shared_ptr<ARDOUR::PluginInfo> instrument = std::shared_ptr<ARDOUR::PluginInfo>(),
 	               std::shared_ptr<ARDOUR::Track>      track = std::shared_ptr<ARDOUR::Track>());
@@ -740,6 +741,7 @@ private:
 	Gtk::Menu track_selection_context_menu;
 
 	GdkEvent context_click_event;
+	bool     in_track_context_menu;
 
 	void popup_track_context_menu (int, int, ItemType, bool);
 	Gtk::Menu* build_track_context_menu ();
@@ -1090,6 +1092,7 @@ private:
 	bool button_press_handler (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_press_handler_1 (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_press_handler_2 (ArdourCanvas::Item*, GdkEvent*, ItemType);
+	bool button_press_handler_3 (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_release_handler (ArdourCanvas::Item*, GdkEvent*, ItemType);
 	bool button_press_dispatch (GdkEventButton*);
 	bool button_release_dispatch (GdkEventButton*);
@@ -1249,7 +1252,7 @@ private:
 	void bring_in_external_audio (Editing::ImportMode mode,  samplepos_t& pos);
 
 	bool  idle_drop_paths  (std::vector<std::string> paths, Temporal::timepos_t sample, double ypos, bool copy);
-	void  drop_paths_part_two  (const std::vector<std::string>& paths, Temporal::timepos_t const & sample, double ypos, bool copy);
+	void  drop_paths_part_two  (const std::vector<std::string>& paths, Temporal::timepos_t const & sample, double ypos, bool copy, bool transient);
 
 	int import_sndfiles (std::vector<std::string>              paths,
 	                     Editing::ImportDisposition            disposition,
@@ -1258,7 +1261,7 @@ private:
 	                     Temporal::timepos_t&                  pos,
 	                     int                                   target_regions,
 	                     int                                   target_tracks,
-	                     std::shared_ptr<ARDOUR::Track>&     track,
+	                     std::shared_ptr<ARDOUR::Track>&       track,
 	                     std::string const&                    pgroup_id,
 	                     bool                                  replace,
 	                     bool                                  with_markers,
@@ -1269,10 +1272,11 @@ private:
 	                    bool&                                 check_sample_rate,
 	                    Editing::ImportDisposition            disposition,
 	                    Editing::ImportMode                   mode,
+	                    bool                                  transient,
 	                    Temporal::timepos_t&                  pos,
 	                    int                                   target_regions,
 	                    int                                   target_tracks,
-	                    std::shared_ptr<ARDOUR::Track>&     track,
+	                    std::shared_ptr<ARDOUR::Track>&       track,
 	                    std::string const&                    pgroup_id,
 	                    std::shared_ptr<ARDOUR::PluginInfo> instrument = std::shared_ptr<ARDOUR::PluginInfo>());
 
@@ -1281,21 +1285,23 @@ private:
 	                 Temporal::timepos_t&                  pos,
 	                 Editing::ImportDisposition            disposition,
 	                 Editing::ImportMode                   mode,
+	                 bool                                  transient,
 	                 int                                   target_regions,
 	                 int                                   target_tracks,
-	                 std::shared_ptr<ARDOUR::Track>&     track,
+	                 std::shared_ptr<ARDOUR::Track>&       track,
 	                 std::string const&                    pgroup_id,
 	                 bool                                  add_channel_suffix,
 	                 std::shared_ptr<ARDOUR::PluginInfo> instrument = std::shared_ptr<ARDOUR::PluginInfo>());
 
 	int finish_bringing_in_material (std::shared_ptr<ARDOUR::Region>     region,
-	                                 uint32_t                              in_chans,
-	                                 uint32_t                              out_chans,
-	                                 Temporal::timepos_t&                  pos,
-	                                 Editing::ImportMode                   mode,
+	                                 uint32_t                            in_chans,
+	                                 uint32_t                            out_chans,
+	                                 Temporal::timepos_t&                pos,
+	                                 Editing::ImportMode                 mode,
+	                                 bool                                transient,
 	                                 std::shared_ptr<ARDOUR::Track>&     existing_track,
-	                                 std::string const&                    new_track_name,
-	                                 std::string const&                    pgroup_id,
+	                                 std::string const&                  new_track_name,
+	                                 std::string const&                  pgroup_id,
 	                                 std::shared_ptr<ARDOUR::PluginInfo> instrument);
 
 	std::shared_ptr<ARDOUR::AudioTrack> get_nth_selected_audio_track (int nth) const;
@@ -1477,7 +1483,6 @@ private:
 	void region_view_item_click (AudioRegionView&, GdkEventButton*);
 
 	bool can_remove_control_point (ArdourCanvas::Item*);
-	void remove_control_point (ArdourCanvas::Item*);
 
 	/* Canvas event handlers */
 
@@ -1645,7 +1650,6 @@ private:
 	void edit_tempo_marker (TempoMarker&);
 	void edit_meter_marker (MeterMarker&);
 	void edit_bbt_marker (BBTMarker&);
-	void edit_control_point (ArdourCanvas::Item*);
 	void edit_region (RegionView*);
 
 	void edit_current_meter ();
@@ -1813,16 +1817,13 @@ private:
 	void handle_gui_changes (std::string const&, void*);
 	void region_selection_changed ();
 	void catch_up_on_midi_selection ();
-	sigc::connection editor_regions_selection_changed_connection;
 	void sensitize_all_region_actions (bool);
 	void sensitize_the_right_region_actions (bool because_canvas_crossing);
-	bool _all_region_actions_sensitized;
 	/** Flag to block region action handlers from doing what they normally do;
 	 *  I tried Gtk::Action::block_activate() but this doesn't work (ie it doesn't
 	 *  block) when setting a ToggleAction's active state.
 	 */
 	bool _ignore_region_action;
-	bool _last_region_menu_was_main;
 	void point_selection_changed ();
 	void marker_selection_changed ();
 
@@ -1879,7 +1880,6 @@ private:
 	void stop_canvas_autoscroll ();
 
 	/* trimming */
-	void point_trim (GdkEvent*, Temporal::timepos_t const &);
 
 	void trim_region_front();
 	void trim_region_back();
@@ -2298,6 +2298,7 @@ private:
 	bool bbt_to_grid (Temporal::BBT_Offset const & bbt, Editing::GridType& gt) const;
 
 	MidiInspector* _midi_inspector;
+	Gtk::ScrolledWindow* midi_inspector_scrolled_window;
 	ARDOUR::Quantize* get_quantize_op ();
 	void midi_view_selection_changed (SimpleMidiNoteSelection selection);
 	sigc::connection midi_view_selection_connection;

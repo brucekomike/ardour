@@ -41,6 +41,7 @@
 
 #include "ardour/audio_buffer.h"
 #include "ardour/audioengine.h"
+#include "ardour/butler.h"
 #include "ardour/debug.h"
 #include "ardour/rc_configuration.h"
 #include "ardour/selection.h"
@@ -131,7 +132,7 @@ VST3Plugin::parameter_change_handler (VST3PI::ParameterChange t, uint32_t param,
 			break;
 		case VST3PI::ValueChange:
 			_parameter_queue.write_one (PV (param, value));
-			/* fallthrough */
+			[[fallthrough]];
 		case VST3PI::ParamValueChanged:
 			/* emit ParameterChangedExternally, mark preset dirty */
 			Plugin::parameter_changed_externally (param, value);
@@ -1086,7 +1087,7 @@ VST3PluginInfo::load (Session& session)
 		plugin.reset (new VST3Plugin (session.engine (), session, plug));
 		plugin->set_info (PluginInfoPtr (shared_from_this ()));
 		return plugin;
-	} catch (failed_constructor& err) {
+	} catch (...) {
 		;
 	}
 
@@ -1201,6 +1202,10 @@ VST3PI::VST3PI (std::shared_ptr<ARDOUR::VST3PluginModule> m, std::string unique_
 		throw failed_constructor ();
 	}
 
+#if !(defined PLATFORM_WINDOWS || defined __APPLE__) /* Linux only */
+	_restart_component_is_synced = m->has_symbol ("yabridge_version");
+#endif
+
 	PFactoryInfo fi;
 	if (factory->getFactoryInfo (&fi) == kResultTrue) {
 		/* work around issue with UADx VST3s not recognizing
@@ -1209,14 +1214,15 @@ VST3PI::VST3PI (std::shared_ptr<ARDOUR::VST3PluginModule> m, std::string unique_
 		if (0 == strcmp (fi.vendor, "Universal Audio (UADx)")) {
 			_no_kMono = true;
 		}
+		if (0 == strcmp (fi.vendor, "CWITEC")) {
+			/* TX16Wx - #10498 */
+			_restart_component_is_synced = true;
+		}
 	}
 
-#if !(defined PLATFORM_WINDOWS || defined __APPLE__) /* Linux only */
-	_restart_component_is_synced = m->has_symbol ("yabridge_version");
 	if (_restart_component_is_synced) {
 		DEBUG_TRACE (DEBUG::VST3Config, "VST3PI detected yabridge\n");
 	}
-#endif
 
 #ifndef NDEBUG
 	if (DEBUG_ENABLED (DEBUG::VST3Config)) {
@@ -1635,7 +1641,7 @@ VST3PI::init_output_configuration ()
 tresult
 VST3PI::restartComponent (int32 flags)
 {
-	DEBUG_TRACE (DEBUG::VST3Callbacks, string_compose ("VST3PI::restartComponent %1%2\n", std::hex, flags));
+	DEBUG_TRACE (DEBUG::VST3Callbacks, string_compose ("VST3PI::restartComponent 0x%1%2\n", std::hex, flags));
 
 	if (flags & Vst::kReloadComponent) {
 		PBD::Mutex::Lock pl (_process_lock, PBD::Mutex::NotLock);
@@ -1663,23 +1669,16 @@ VST3PI::restartComponent (int32 flags)
 		update_shadow_data ();
 	}
 	if (flags & Vst::kLatencyChanged) {
-		/* https://forums.steinberg.net/t/reporting-latency-change/201601
-		 * mentions that the host plugin should be deactivated before querying
-		 * latency. However the official spec does not require this.
-		 *
-		 * However other implementations do not call setActive(false/true) when
-		 * the latency changes, and Ardour does not require it either, latency
-		 * changes are automatically picked up.
+		/* Note: If this is initiated by the AudioProcessor, we should also notify
+		 * and restart the EditController.
 		 */
-		PBD::Mutex::Lock pl (_process_lock, PBD::Mutex::NotLock);
-		if (!AudioEngine::instance ()->in_process_thread () && !_is_loading_state && !_restart_component_is_synced && !_process_offline) {
-			/* Some plugins (e.g BlendEQ) call this from the process,
-			 * IPlugProcessor::ProcessBuffers. In that case taking the
-			 * _process_lock would deadlock.
-			 */
-			pl.acquire ();
-		}
-		_plugin_latency.reset ();
+		g_idle_add_full (G_PRIORITY_HIGH_IDLE, [](gpointer arg) -> gboolean {
+				VST3PI* self = (VST3PI*)arg;
+				self->deactivate ();
+				self->activate ();
+				return false;
+				},
+			this, NULL);
 	}
 	if (flags & Vst::kIoTitlesChanged) {
 		/* Input and/or Output bus titles have changed
@@ -1871,12 +1870,13 @@ VST3PI::activate ()
 		return false;
 	}
 
+	_plugin_latency = _processor->getLatencySamples ();
+
 	res = _processor->setProcessing (true);
 	if (!(res == kResultOk || res == kNotImplemented)) {
 		return false;
 	}
 
-	_plugin_latency.reset ();
 	_is_processing = true;
 	return true;
 }

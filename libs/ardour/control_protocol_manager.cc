@@ -24,10 +24,6 @@
 #ifdef HAVE_USB
 #include "pbd/pthread_utils.h"
 
-#ifdef COMPILER_MSVC
-#define _WINSOCKAPI_
-#endif
-
 #include <libusb.h>
 /* ControlProtocolManager is a singleton, so we can use static
  * here. This has the advantage that libusb.h does not need
@@ -122,6 +118,8 @@ ControlProtocolInfo::active () const
 
 ControlProtocolManager::ControlProtocolManager ()
 {
+	/* enum used here must be the highest SurfaceCallbackType */
+	_supported_surface_callbacks.assign (CreateSession + 1, 0);
 }
 
 ControlProtocolManager::~ControlProtocolManager ()
@@ -243,6 +241,16 @@ ControlProtocolManager::activate (ControlProtocolInfo& cpi, std::string const & 
 		teardown (cpi, false);
 	}
 
+	if (cp->surface_callback) {
+		std::vector<SurfaceCallbackType> stcs = cp->supported_surface_callbacks ();
+		if (!stcs.empty()) {
+			for (auto stc : stcs) {
+				_supported_surface_callbacks[stc]++;
+			}
+			SupportedSurfaceCallbackChange (); /* EMIT SIGNAL */
+		}
+	}
+
 	return 0;
 }
 
@@ -353,6 +361,18 @@ ControlProtocolManager::teardown (ControlProtocolInfo& cpi, bool lock_required)
 	cpi.state = new XMLNode (cpi.protocol->get_state ());
 	cpi.state->set_property (X_("active"), false);
 
+	if (cpi.protocol->surface_callback) {
+		std::vector<SurfaceCallbackType> stcs = cpi.protocol->supported_surface_callbacks ();
+		if (!stcs.empty()) {
+			for (auto stc : stcs) {
+				if (_supported_surface_callbacks[stc]) {
+					_supported_surface_callbacks[stc]--;
+				}
+			}
+			SupportedSurfaceCallbackChange (); /* EMIT SIGNAL */
+		}
+	}
+
 	cpi.descriptor->destroy (cpi.protocol);
 
 	PBD::RWLock::WriterLock lm (_protocols_lock, PBD::RWLock::NotLock);
@@ -368,10 +388,6 @@ ControlProtocolManager::teardown (ControlProtocolInfo& cpi, bool lock_required)
 		cerr << "Programming error: ControlProtocolManager::teardown() called for " << cpi.name << ", but it was not found in control_protocols" << endl;
 	}
 
-	if (lock_required) {
-		lm.release ();
-	}
-
 	cpi.protocol = 0;
 	delete (Glib::Module*)cpi.descriptor->module;
 	/* cpi->descriptor is now inaccessible since dlclose() or equivalent
@@ -379,6 +395,10 @@ ControlProtocolManager::teardown (ControlProtocolInfo& cpi, bool lock_required)
 	 * object made accessible by dlopen().
 	 */
 	cpi.descriptor = 0;
+
+	if (lock_required) {
+		lm.release ();
+	}
 
 	ProtocolStatusChange (&cpi);
 
@@ -397,7 +417,7 @@ ControlProtocolManager::discover_control_protocols ()
 {
 	vector<std::string> cp_modules;
 
-#ifdef COMPILER_MSVC
+#if defined COMPILER_MSVC && !defined WAF_BUILD
 	/**
 	 * Different build targets (Debug / Release etc) use different versions
 	 * of the 'C' runtime (which can't be 'mixed & matched'). Therefore, in
@@ -647,6 +667,7 @@ ControlProtocolManager::probe_midi_control_protocols ()
 	}
 	for (auto const& cpi : _control_protocol_info) {
 		/* Note: manual teardown deletes the descriptor */
+		PBD::RWLock::ReaderLock lm (_protocols_lock);
 		if (!cpi->descriptor) {
 			cpi->automatic = false;
 			continue;
@@ -670,9 +691,11 @@ ControlProtocolManager::probe_midi_control_protocols ()
 					}
 				}
 			}
+			lm.release();
 			activate (*cpi, device_config);
 		} else if (active && cpi->automatic && !found) {
 			cpi->automatic = false;
+			lm.release();
 			deactivate (*cpi);
 			/* allow to auto-enable again */
 			if (!cpi->descriptor) {
@@ -733,6 +756,38 @@ ControlProtocolManager::stripable_selection_changed (StripableNotificationListPt
 		for (auto const& p : _control_protocols) {
 			DEBUG_TRACE (DEBUG::Selection, string_compose ("selection change notification for surface \"%1\"\n", p->name ()));
 			p->stripable_selection_changed ();
+		}
+	}
+}
+
+std::vector<SurfaceCallbackType>
+ControlProtocolManager::supported_surface_callbacks () const
+{
+	std::vector<SurfaceCallbackType> existing ({CreateSession});
+	std::vector<SurfaceCallbackType> supported;
+
+	for (auto stc : existing) {
+		if (_supported_surface_callbacks[stc]) {
+			supported.push_back (stc);
+		}
+	}
+
+	return supported;
+}
+
+void
+ControlProtocolManager::do_surface_callback (bool only_once, SurfaceCallbackType type, void* arg)
+{
+	PBD::RWLock::ReaderLock lm (_protocols_lock);
+	for (auto const& p : _control_protocols) {
+		ControlProtocol::SurfaceCallback sc = p->surface_callback;
+		if (sc) {
+			lm.release ();
+			sc (type, arg);
+			if (only_once) {
+				return;
+			}
+			lm.acquire ();
 		}
 	}
 }

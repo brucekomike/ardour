@@ -500,7 +500,7 @@ AudioClock::end_edit (bool modify)
 			break;
 
 		case Seconds:
-			/* fallthrough */
+			[[fallthrough]];
 		case Samples:
 			if (edit_string.length() < 1) {
 				edit_string = pre_edit_string;
@@ -1030,6 +1030,7 @@ AudioClock::set_slave_info ()
 
 		switch (tm->type()) {
 		case Engine:
+		case WallClock:
 			_left_btn.set_text (tm->name(), true);
 			_right_btn.set_text ("", true);
 			break;

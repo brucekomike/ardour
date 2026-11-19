@@ -243,6 +243,8 @@ class MidiView : public virtual sigc::trackable, public LineMerger
 	void select_matching_notes (uint8_t notenum, uint16_t channel_mask, bool add, bool extend);
 	void toggle_matching_notes (uint8_t notenum, uint16_t channel_mask);
 
+	virtual bool select_notes_by_velocity (Temporal::timepos_t const & start, Temporal::timepos_t const & end, int velocity_min, int velocity_max, ARDOUR::SelectionOperation op);
+
 	/** Test if a note is within this region's range
 	 *
 	 * @param note the note to test
@@ -327,6 +329,7 @@ class MidiView : public virtual sigc::trackable, public LineMerger
 	}
 	sigc::signal<void> SelectionChanged;
 
+	void notes_as_notelist (Notes& notes) const;
 	void selection_as_notelist (Notes& selected, bool allow_all_if_none_selected = false);
 	void selection_as_notevector (std::vector<std::shared_ptr<NoteType> > & selected, bool allow_all_if_none_selected = false);
 
@@ -501,8 +504,8 @@ class MidiView : public virtual sigc::trackable, public LineMerger
 	void trim_note(NoteBase* ev, ARDOUR::MidiModel::TimeType start_delta,
 	               ARDOUR::MidiModel::TimeType end_delta);
 
-	bool update_drag_selection (Temporal::timepos_t const & start, Temporal::timepos_t const & end, double y0, double y1, bool extend, bool drag_in_progress);
-	void update_vertical_drag_selection (double last_y, double y, bool extend);
+	virtual bool update_drag_selection (Temporal::timepos_t const & start, Temporal::timepos_t const & end, double y0, double y1, bool extend, bool drag_in_progress);
+	virtual void update_vertical_drag_selection (double last_y, double y, bool extend);
 
 	void add_to_selection (NoteBase*);
 	void remove_from_selection (NoteBase*);
@@ -703,7 +706,6 @@ class MidiView : public virtual sigc::trackable, public LineMerger
 
 	void color_note (NoteBase*, int channel);
 	virtual bool post_paste (Temporal::timepos_t const & pos, const ::Selection& selection, PasteContext& ctx) { return false; }
-	bool show_context_menu (GdkEventButton*);
 
 	void _duplicate_notes (int times);
 	bool chord_is_selected () const;

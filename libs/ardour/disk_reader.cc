@@ -226,11 +226,20 @@ DiskReader::midi_chase (samplepos_t spos)
 		for (size_t n = 0; n < rtmb->size(); ++n) {
 			uint32_t sz;
 			RTMidiBuffer::Item const & item ((*rtmb)[n]);
-			if (item.timestamp >= spos) {
+			if (item.timestamp > spos) {
+				/* only chase events before or at the playhead */
 				break;
 			}
 			uint8_t const * buf = rtmb->bytes (item, sz);
 			if (sz == 3) {
+				if (item.timestamp == spos && (buf[0] & 0xF0) != MIDI_CMD_NOTE_OFF) {
+					/* Don't chase events other than note offs located at the playhead,
+					 * these will play normally during playback. We need to chase note offs
+					 * up to this position though to avoid outputting unecessary notes
+					 * when playback starts.
+					 */
+					continue;
+				}
 				_locate_tracker.track (buf);
 			}
 		}
@@ -1536,7 +1545,11 @@ DiskReader::get_midi_playback (MidiBuffer& dst, samplepos_t start_sample, sample
 		/* disk data needed */
 
 		if (Config->get_midi_chase() && _locate_tracker.on()) {
-			_locate_tracker.flush_notes (dst, 0, true);
+			/* write chased notes with a negative time to ensure they stay at the
+			 * beginning of the buffer and don't end up played after events located
+			 * exactly at the playhead's position
+			 */
+			_locate_tracker.flush_notes (dst, -1, true);
 		}
 
 		Location* loc = _loop_location;

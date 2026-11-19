@@ -465,6 +465,7 @@ void
 Editor::do_embed (vector<string>           paths,
                   ImportDisposition        import_as,
                   ImportMode               mode,
+                  bool                     transient,
                   timepos_t&               pos,
                   ARDOUR::PluginInfoPtr    instrument,
                   std::shared_ptr<Track> track)
@@ -492,7 +493,7 @@ Editor::do_embed (vector<string>           paths,
 				track = get_nth_selected_audio_track (nth++);
 			}
 
-			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, -1, track, pgroup_id, instrument) < -1) {
+			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, transient, pos, 1, -1, track, pgroup_id, instrument) < -1) {
 				/* error, bail out */
 				return;
 			}
@@ -510,7 +511,7 @@ Editor::do_embed (vector<string>           paths,
 			to_embed.clear ();
 			to_embed.push_back (*a);
 
-			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, -1, -1, track, pgroup_id, instrument) < -1) {
+			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, transient, pos, -1, -1, track, pgroup_id, instrument) < -1) {
 				/* error, bail out */
 				return;
 			}
@@ -518,7 +519,7 @@ Editor::do_embed (vector<string>           paths,
 		break;
 
 	case Editing::ImportMergeFiles:
-		if (embed_sndfiles (paths, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, pgroup_id, instrument) < -1) {
+		if (embed_sndfiles (paths, multi, check_sample_rate, import_as, mode, transient, pos, 1, 1, track, pgroup_id, instrument) < -1) {
 			/* error, bail out */
 			return;
 		}
@@ -535,7 +536,7 @@ Editor::do_embed (vector<string>           paths,
 			to_embed.clear ();
 			to_embed.push_back (*a);
 
-			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, pos, 1, 1, track, pgroup_id, instrument) < -1) {
+			if (embed_sndfiles (to_embed, multi, check_sample_rate, import_as, mode, transient, pos, 1, 1, track, pgroup_id, instrument) < -1) {
 				/* error, bail out */
 				return;
 			}
@@ -604,6 +605,7 @@ Editor::import_sndfiles (vector<string>            paths,
 			import_status.pos,
 			disposition,
 			import_status.mode,
+			false, /* non-transient */
 			import_status.target_regions,
 			import_status.target_tracks,
 			track, pgroup_id, false, instrument
@@ -623,7 +625,8 @@ Editor::embed_sndfiles (vector<string>            paths,
                         bool&                     check_sample_rate,
                         ImportDisposition         disposition,
                         ImportMode                mode,
-                        timepos_t&              pos,
+                        bool                      transient,
+                        timepos_t&                pos,
                         int                       target_regions,
                         int                       target_tracks,
                         std::shared_ptr<Track>& track,
@@ -640,9 +643,8 @@ Editor::embed_sndfiles (vector<string>            paths,
 
 	CursorRAII cr (*this, _cursors->wait);
 
-	for (vector<string>::iterator p = paths.begin(); p != paths.end(); ++p) {
+	for (auto & path : paths) {
 
-		string path = *p;
 		string error_msg;
 
 		/* note that we temporarily truncated _id at the colon */
@@ -719,13 +721,13 @@ Editor::embed_sndfiles (vector<string>            paths,
 
 				std::shared_ptr<Source> s;
 
-				if ((s = _session->audio_source_by_path_and_channel (path, n)) == 0) {
+				if ((s = _session->audio_source_by_path_and_channel (path, n)) == nullptr) {
 
 					source = std::dynamic_pointer_cast<AudioFileSource> (
 						SourceFactory::createExternal (DataType::AUDIO, *_session,
-									       path, n,
-						                               Source::Flag (0),
-									true, true));
+									       path, n, 
+						                               transient ? Source::Flag (Source::Transient) : Source::Flag (0),
+						                               true, true));
 				} else {
 					source = std::dynamic_pointer_cast<AudioFileSource> (s);
 				}
@@ -743,7 +745,7 @@ Editor::embed_sndfiles (vector<string>            paths,
 	}
 
 	if (!sources.empty()) {
-		return add_sources (paths, sources, pos, disposition, mode, target_regions, target_tracks, track, pgroup_id, true, instrument);
+		return add_sources (paths, sources, pos, disposition, mode, transient, target_regions, target_tracks, track, pgroup_id, true, instrument);
 	}
 
 	return 0;
@@ -755,6 +757,7 @@ Editor::add_sources (vector<string>            paths,
                      timepos_t&                pos,
                      ImportDisposition         disposition,
                      ImportMode                mode,
+                     bool                      transient,
                      int                       target_regions,
                      int                       target_tracks,
                      std::shared_ptr<Track>&   track,
@@ -988,7 +991,7 @@ Editor::add_sources (vector<string>            paths,
 			import_status.doing_what = "Creating Tracks";
 			ARDOUR::GUIIdle ();
 		}
-		finish_bringing_in_material (*r, input_chan, output_chan, pos, mode, track, track_names[n], pgroup_id, instrument);
+		finish_bringing_in_material (*r, input_chan, output_chan, pos, mode, transient, track, track_names[n], pgroup_id, instrument);
 
 		rlen = (*r)->length();
 
@@ -1019,6 +1022,7 @@ Editor::finish_bringing_in_material (std::shared_ptr<Region> region,
                                      uint32_t                  out_chans,
                                      timepos_t&                pos,
                                      ImportMode                mode,
+                                     bool                      transient,
                                      std::shared_ptr<Track>& existing_track,
                                      string const&             new_track_name,
                                      string const&             pgroup_id,
@@ -1026,6 +1030,8 @@ Editor::finish_bringing_in_material (std::shared_ptr<Region> region,
 {
 	std::shared_ptr<AudioRegion> ar = std::dynamic_pointer_cast<AudioRegion>(region);
 	std::shared_ptr<MidiRegion> mr = std::dynamic_pointer_cast<MidiRegion>(region);
+
+	assert (!existing_track || !transient);
 
 	switch (mode) {
 	case ImportAsRegion:
@@ -1064,7 +1070,7 @@ Editor::finish_bringing_in_material (std::shared_ptr<Region> region,
 	}
 
 	case ImportAsTrigger:
-	/* fallthrough */
+	[[fallthrough]];
 	case ImportAsTrack:
 	{
 		if (!existing_track) {
@@ -1080,11 +1086,15 @@ Editor::finish_bringing_in_material (std::shared_ptr<Region> region,
 				if (at.empty()) {
 					return -1;
 				}
-				for (AudioTrackList::iterator i = at.begin(); i != at.end(); ++i) {
-					if (Config->get_strict_io ()) {
-						(*i)->set_strict_io (true);
+
+				for (auto & atr : at) {
+					if (transient) {
+						atr->presentation_info().set_transient (true);
 					}
-					(*i)->playlist()->set_pgroup_id (pgroup_id);
+					if (Config->get_strict_io ()) {
+						atr->set_strict_io (true);
+					}
+					atr->playlist()->set_pgroup_id (pgroup_id);
 				}
 
 				existing_track = at.front();
@@ -1107,11 +1117,14 @@ Editor::finish_bringing_in_material (std::shared_ptr<Region> region,
 					return -1;
 				}
 
-				for (list<std::shared_ptr<MidiTrack> >::iterator i = mt.begin(); i != mt.end(); ++i) {
-					if (Config->get_strict_io ()) {
-						(*i)->set_strict_io (true);
+				for (auto & mtr : mt) {
+					if (transient) {
+						mtr->presentation_info().set_transient (true);
 					}
-					(*i)->playlist()->set_pgroup_id (pgroup_id);
+					if (Config->get_strict_io ()) {
+						mtr->set_strict_io (true);
+					}
+					mtr->playlist()->set_pgroup_id (pgroup_id);
 				}
 
 				existing_track = mt.front();

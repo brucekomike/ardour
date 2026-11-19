@@ -80,6 +80,7 @@
 #include "pbd/debug.h"
 #include "pbd/enumwriter.h"
 #include "pbd/error.h"
+#include "pbd/no_state.h"
 #include "pbd/file_utils.h"
 #include "pbd/pathexpand.h"
 #include "pbd/pthread_utils.h"
@@ -787,8 +788,6 @@ Session::remove_state (string snapshot_name)
 int
 Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot, bool template_only, bool for_archive, bool only_used_assets)
 {
-	DEBUG_TRACE (DEBUG::Locale, string_compose ("Session::save_state locale '%1'\n", setlocale (LC_NUMERIC, NULL)));
-
 	/* only_used_assets is only possible when archiving */
 	assert (!only_used_assets || for_archive);
 	/* template and archive are exclusive */
@@ -798,15 +797,39 @@ Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot
 	/* pending saves are for current snapshot only */
 	assert (!pending || ((snapshot_name.empty () || snapshot_name == _current_snapshot_name) && !template_only && !for_archive));
 
+	SessionSaveDisposition sd = SaveSnapshot;
+	if (pending) {
+		sd = SavePending;
+	} else if (switch_to_snapshot) {
+		sd = SaveSnapshotAndSwitch;
+	} else if (template_only) {
+		sd = SaveTemplate;
+	} else if (for_archive) {
+		if (only_used_assets) {
+			sd = ArchiveOnlyUsedAssets;
+		} else {
+			sd = ArchiveWithAllSources;
+		}
+	}
+	return save_state_full (snapshot_name, sd);
+
+}
+
+int
+Session::save_state_full (std::string snapshot_name, SessionSaveDisposition ssd)
+{
+	DEBUG_TRACE (DEBUG::Locale, string_compose ("Session::save_state locale '%1'\n", setlocale (LC_NUMERIC, NULL)));
 	XMLTree tree;
 	std::string xml_path(_session_dir->root_path());
 
-	if (!pending) {
+	if (ssd != SavePending) {
 		/* Prevent destructive edits after explicit save or snapshot changes.
 		 * Otherwise this one can delete sources used by other snapshot
 		 */
 		reset_last_capture_sources ();
 	}
+
+	const bool for_archive = ssd == ArchiveOnlyUsedAssets || ssd == ArchiveWithAllSources;
 
 	/* prevent concurrent saves from different threads */
 
@@ -822,24 +845,23 @@ Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot
 
 	if (_suspend_save.load ()) {
 		/* StateProtector cannot be used for templates or save-as */
-		assert (!template_only && !switch_to_snapshot && !for_archive && (snapshot_name.empty () || snapshot_name == _current_snapshot_name));
-		if (pending) {
+		if (ssd == SavePending) {
 			_save_queued_pending = true;
 		} else {
 			_save_queued = true;
 		}
 		return 1;
 	}
-	if (pending) {
+	if (ssd == SavePending) {
 		_save_queued_pending = false;
 	} else {
 		_save_queued = false;
 	}
 
 	snapshot_t fork_state = NormalSave;
-	if (!snapshot_name.empty() && snapshot_name != _current_snapshot_name && !template_only && !pending && !for_archive) {
+	if (!snapshot_name.empty() && snapshot_name != _current_snapshot_name && (ssd == SaveSnapshot || ssd == SaveSnapshotAndSwitch)) {
 		/* snapshot, close midi */
-		fork_state = switch_to_snapshot ? SwitchToSnapshot : SnapshotKeep;
+		fork_state = ssd == SaveSnapshotAndSwitch ? SwitchToSnapshot : SnapshotKeep;
 	}
 
 #ifndef NDEBUG
@@ -863,26 +885,33 @@ Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot
 	SessionSaveUnderway (); /* EMIT SIGNAL */
 
 	bool mark_as_clean = true;
-	if (!snapshot_name.empty() && !switch_to_snapshot) {
+	if (!snapshot_name.empty() && ssd != SaveSnapshotAndSwitch) {
 		mark_as_clean = false;
 	}
 
-	if (template_only) {
+	if (ssd == SaveTemplate || ssd == SaveAsSession) {
 		mark_as_clean = false;
-		tree.set_root (&get_template());
+
+		/* if we don't disable rec-enable, diskstreams
+		 * will believe they need to store their capture
+		 * sources in their state node.
+		 */
+		disable_record (false);
+
+		tree.set_root (&state (ssd, NormalSave));
 	} else {
-		tree.set_root (&state (false, fork_state, for_archive, only_used_assets));
+		tree.set_root (&state (ssd, fork_state));
 	}
 
 	if (snapshot_name.empty()) {
 		snapshot_name = _current_snapshot_name;
-	} else if (switch_to_snapshot) {
+	} else if (ssd == SaveSnapshotAndSwitch) {
 		set_snapshot_name (snapshot_name);
 	}
 
 	assert (!snapshot_name.empty());
 
-	if (!pending) {
+	if (ssd != SavePending) {
 
 		/* proper save: use statefile_suffix (.ardour in English) */
 
@@ -931,7 +960,7 @@ Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot
 
 	//Mixbus auto-backup mechanism
 	if(Profile->get_mixbus()) {
-		if (pending) {  //"pending" save means it's a backup, or some other non-user-initiated save;  a good time to make a backup
+		if (ssd == SavePending) {  //"pending" save means it's a backup, or some other non-user-initiated save;  a good time to make a backup
 			// make a serialized safety backup
 			// (will make one periodically but only one per hour is left on disk)
 			// these backup files go into a separated folder
@@ -954,8 +983,7 @@ Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot
 		}
 	}
 
-	if (!pending && !for_archive) {
-
+	if (ssd == SaveSnapshot || ssd == SaveSnapshotAndSwitch) {
 		save_history (snapshot_name);
 
 		if (mark_as_clean) {
@@ -974,16 +1002,16 @@ Session::save_state (string snapshot_name, bool pending, bool switch_to_snapshot
 	}
 #endif
 
-	if (!pending && !for_archive && ! template_only) {
+	if (ssd == SaveSnapshot || ssd == SaveSnapshotAndSwitch) {
 		remove_pending_capture_state ();
 	}
 
-	if (pending) {
+	if (ssd == SavePending) {
 		/* new pending state includes recorded regions. */
 		remove_pending_record_log ();
 	}
 
-	if (!pending && !for_archive && ! template_only) {
+	if (ssd == SaveSnapshot || ssd == SaveSnapshotAndSwitch) {
 		save_misc_port_state ();
 	}
 
@@ -1331,20 +1359,7 @@ Session::get_state () const
 {
 	/* this is not directly called, but required by PBD::Stateful */
 	assert (0);
-	return state (false, NormalSave);
-}
-
-XMLNode&
-Session::get_template ()
-{
-	/* if we don't disable rec-enable, diskstreams
-	   will believe they need to store their capture
-	   sources in their state node.
-	*/
-
-	disable_record (false);
-
-	return state (true, NormalSave);
+	return state (SaveSnapshot, NormalSave);
 }
 
 bool
@@ -1475,10 +1490,19 @@ Session::export_route_state (std::shared_ptr<RouteList> rl, const string& path, 
 		 */
 		child = node->add_child ("Playlists"); // SessionPlaylists::add_state
 		for (PlaylistSet::const_iterator i = playlists.begin(); i != playlists.end(); ++i) {
-			child->add_child_nocopy ((*i)->get_state ());
+
+			try {
+				child->add_child_nocopy ((*i)->get_state ());
+			} catch (no_state const & ns) {
+				continue;
+			}
+
 			std::shared_ptr<RegionList> prl = (*i)->region_list ();
-			for (RegionList::const_iterator s = prl->begin(); s != prl->end(); ++s) {
-				const Region::SourceList& sl = (*s)->sources ();
+			for (auto const & r : *prl) {
+				if (r->transient()) {
+					continue;
+				}
+				const Region::SourceList& sl = r->sources ();
 				for (Region::SourceList::const_iterator sli = sl.begin(); sli != sl.end(); ++sli) {
 					sources.insert (*sli);
 				}
@@ -1487,6 +1511,9 @@ Session::export_route_state (std::shared_ptr<RouteList> rl, const string& path, 
 
 		child = node->add_child ("Sources");
 		for (SourceSet::const_iterator i = sources.begin(); i != sources.end(); ++i) {
+			if ((*i)->transient()) {
+				continue;
+			}
 			child->add_child_nocopy ((*i)->get_state ());
 			std::shared_ptr<FileSource> fs = std::dynamic_pointer_cast<FileSource> (*i);
 			if (fs) {
@@ -1823,10 +1850,14 @@ struct route_id_compare {
 } // anon namespace
 
 XMLNode&
-Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, bool only_used_assets) const
+Session::state (SessionSaveDisposition ssd, snapshot_t snapshot_type) const
 {
+	bool for_archive      = ssd == ArchiveOnlyUsedAssets || ssd == ArchiveWithAllSources;
+	bool only_used_assets = ssd == ArchiveOnlyUsedAssets;
+	bool save_template    = ssd == SaveAsSession || ssd == SaveTemplate;
+
 	LocaleGuard lg;
-	XMLNode* node = new XMLNode("Session");
+	XMLNode* node = new XMLNode (X_("Session"));
 	XMLNode* child;
 
 	PBD::Unwinder<bool> uw (Automatable::skip_saving_automation, save_template);
@@ -1839,13 +1870,16 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 	modified_with = string_compose ("%1 %2", PROGRAM_NAME, revision);
 	child->set_property("modified-with", modified_with);
 
-	/* store configuration settings */
+	if (ssd != SaveTemplate) {
+		node->set_property ("sample-rate", _base_sample_rate);
+		node->set_property ("name", _name);
+	}
 
+	/* store configuration settings */
 	if (!save_template) {
 
 		node->set_property ("uuid", _uuid.to_s());
-		node->set_property ("name", _name);
-		node->set_property ("sample-rate", _base_sample_rate);
+		node->set_property ("session-range-is-free", _session_range_is_free);
 
 		if (!_engine_state) {
 			_engine_state = new XMLNode (X_("EngineState"));
@@ -1906,7 +1940,6 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			child = node->add_child ("Path");
 			child->add_content (p);
 		}
-		node->set_property ("session-range-is-free", _session_range_is_free);
 	}
 
 	/* save the ID counter */
@@ -1958,7 +1991,11 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			collect_sources_of_this_snapshot (sources_used_by_this_snapshot, false);
 		}
 
-		for (SourceMap::const_iterator siter = sources.begin(); siter != sources.end(); ++siter) {
+		for (auto const & [id,src] : sources) {
+
+			if (src->transient()) {
+				continue;
+			}
 
 			/* Don't save information about non-file Sources, or
 			 * about file sources that are empty
@@ -1966,7 +2003,7 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			 */
 			std::shared_ptr<FileSource> fs;
 
-			if ((fs = std::dynamic_pointer_cast<FileSource> (siter->second)) == 0) {
+			if ((fs = std::dynamic_pointer_cast<FileSource> (src)) == 0) {
 				continue;
 			}
 
@@ -1995,12 +2032,12 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 				   2022) we use const_cast.
 				*/
 
-				if (const_cast<Session*>(this)->maybe_copy_midifile (snapshot_type, siter->second, child)) {
+				if (const_cast<Session*>(this)->maybe_copy_midifile (snapshot_type, src, child)) {
 					continue; /* state already added to child */
 				}
 			}
 
-			child->add_child_nocopy (siter->second->get_state());
+			child->add_child_nocopy (src->get_state());
 		}
 	}
 
@@ -2013,8 +2050,12 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 
 		if (!only_used_assets) {
 			const RegionFactory::RegionMap& region_map (RegionFactory::all_regions());
-			for (RegionFactory::RegionMap::const_iterator i = region_map.begin(); i != region_map.end(); ++i) {
-				std::shared_ptr<Region> r = i->second;
+			for (auto const & [id,r] : region_map) {
+
+				if (r->transient()) {
+					continue;
+				}
+
 				/* regions must have sources */
 				assert (r->sources().size() > 0 && r->master_sources().size() > 0);
 				/* only store regions not attached to playlists */
@@ -2037,7 +2078,10 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 			std::set<std::shared_ptr<Region>> tr;
 			{
 				std::shared_ptr<RouteList const> rl = routes.reader();
-				for (auto const& r : *rl) {
+				for (auto const & r : *rl) {
+					if (r->is_transient()) {
+						continue;
+					}
 					std::shared_ptr<TriggerBox> tb = r->triggerbox ();
 					if (tb) {
 						tb->used_regions (tr);
@@ -2047,8 +2091,11 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 
 			auto const& used_pl (_playlists->get_used ());
 			const RegionFactory::RegionMap& region_map (RegionFactory::all_regions());
-			for (RegionFactory::RegionMap::const_iterator i = region_map.begin(); i != region_map.end(); ++i) {
-				std::shared_ptr<Region> r = i->second;
+			for (auto const & [id,r] : region_map) {
+
+				if (r->transient()) {
+					continue;
+				}
 
 				if (tr.find (r) != tr.end()) {
 					child->add_child_nocopy (r->get_state ());
@@ -2154,12 +2201,17 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool for_archive, 
 		RouteList xml_node_order (*r);
 		xml_node_order.sort (cmp);
 
-		for (RouteList::const_iterator i = xml_node_order.begin(); i != xml_node_order.end(); ++i) {
-			if (!(*i)->is_auditioner()) {
+		for (auto const & r : xml_node_order) {
+
+			if (r->is_transient()) {
+				continue;
+			}
+
+			if (!r->is_auditioner()) {
 				if (save_template) {
-					child->add_child_nocopy ((*i)->get_template());
+					child->add_child_nocopy (r->get_template());
 				} else {
-					child->add_child_nocopy ((*i)->get_state());
+					child->add_child_nocopy (r->get_state());
 				}
 			}
 		}
@@ -3465,7 +3517,7 @@ retry:
 
 				case 3:
 					no_questions_about_missing_files = true;
-					/* fallthrough */
+					[[fallthrough]];
 
 				case -1:
 				default:
@@ -3583,7 +3635,7 @@ Session::save_template (const string& template_name, const string& description, 
 	XMLNode* root;
 	{
 		PBD::Unwinder<std::string> uw (_template_state_dir, template_dir_path);
-		root = &get_template ();
+		root = &state (SaveTemplate, NormalSave);
 	}
 
 	root->remove_nodes_and_delete (X_("description"));
@@ -5080,7 +5132,7 @@ Session::config_changed (std::string p, bool ours)
 #ifndef HAVE_RF64_RIFF
 		switch (config.get_native_file_header_format ()) {
 			case MBWF:
-				/* fallthrough */
+				[[fallthrough]];
 			case RF64_WAV:
 				config.set_native_file_header_format (RF64);
 				return;
@@ -6127,7 +6179,7 @@ Session::save_as (SaveAs& saveas)
 
 			{
 				PBD::Unwinder<bool> uw (_no_save_signal, true);
-				save_state ("", false, false, !saveas.include_media);
+				save_state_full ("", saveas.include_media ? SaveSnapshot : SaveAsSession);
 			}
 
 			/* switch back to the way things were */
@@ -6176,7 +6228,7 @@ Session::save_as (SaveAs& saveas)
 				unset_dirty ();
 			}
 
-			save_state ("", false, false, !saveas.include_media);
+			save_state_full ("", saveas.include_media ? SaveSnapshot : SaveAsSession);
 
 			/* the copying above was based on actually discovering files, not just iterating over the sources list.
 			   But if we're going to switch to the new (copied) session, we need to change the paths in the sources also.

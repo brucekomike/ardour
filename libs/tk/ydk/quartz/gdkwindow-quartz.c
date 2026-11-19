@@ -115,39 +115,14 @@ gdk_window_impl_quartz_get_context (GdkDrawable *drawable,
   if (!cg_context)
     return NULL;
 
+  if (window_impl->offscreen) {
+    CGContextSaveGState (window_impl->offscreen);
+    CGContextSetAllowsAntialiasing (window_impl->offscreen, antialias);
+    return window_impl->offscreen;
+  }
+
   CGContextSaveGState (cg_context);
   CGContextSetAllowsAntialiasing (cg_context, antialias);
-
-  /* We'll emulate the clipping caused by double buffering here */
-  if (window_impl->begin_paint_count != 0)
-    {
-      CGRect rect;
-      CGRect *cg_rects;
-      GdkRectangle *rects;
-      gint n_rects, i;
-
-      gdk_region_get_rectangles (window_impl->paint_clip_region,
-                                 &rects, &n_rects);
-
-      if (n_rects == 1)
-        cg_rects = &rect;
-      else
-        cg_rects = g_new (CGRect, n_rects);
-
-      for (i = 0; i < n_rects; i++)
-        {
-          cg_rects[i].origin.x = rects[i].x;
-          cg_rects[i].origin.y = rects[i].y;
-          cg_rects[i].size.width = rects[i].width;
-          cg_rects[i].size.height = rects[i].height;
-        }
-
-      CGContextClipToRects (cg_context, cg_rects, n_rects);
-
-      g_free (rects);
-      if (cg_rects != &rect)
-        g_free (cg_rects);
-    }
 
   return cg_context;
 }
@@ -201,9 +176,6 @@ gdk_window_impl_quartz_finalize (GObject *object)
   GdkWindowObject *private = (GdkWindowObject*) window;
 
   check_grab_destroy (window);
-
-  if (impl->paint_clip_region)
-    gdk_region_destroy (impl->paint_clip_region);
 
   if (impl->transient_for)
     g_object_unref (impl->transient_for);
@@ -667,6 +639,38 @@ get_nsscreen_for_point (gint x, gint y)
   return screen;
 }
 
+void _update_offscreen(GdkWindow *window) {
+  GdkWindowObject *private;
+  GdkWindowImplQuartz *impl;
+
+  private = (GdkWindowObject *)window;
+  impl = private->impl;
+
+  if (impl->view) {
+    if (impl->offscreen) {
+      CFRelease(impl->offscreen);
+      impl->offscreen = NULL;
+    }
+
+    CALayer *layer = [impl->view layer];
+
+    CGFloat scale = 1.0;
+    scale = [impl->toplevel backingScaleFactor];
+    int w = private->width * scale;
+    int stride = (w * 4 + 255) & ~255;
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    impl->offscreen = CGBitmapContextCreate(NULL,
+	w,
+	private->height * scale,
+	8,
+	stride,
+	colorSpace,
+	kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
+    CGContextScaleCTM(impl->offscreen, scale, scale);
+    CGColorSpaceRelease(colorSpace);
+  }
+}
+
 void
 _gdk_window_impl_new (GdkWindow     *window,
 		      GdkWindow     *real_parent,
@@ -844,6 +848,8 @@ _gdk_window_impl_new (GdkWindow     *window,
     default:
       g_assert_not_reached ();
     }
+
+  _update_offscreen(window);
 
   GDK_QUARTZ_RELEASE_POOL;
 
@@ -1174,6 +1180,12 @@ move_resize_window_internal (GdkWindow *window,
     {
       delta.height = 0;
     }
+
+  if (
+    (width != private->width && width != -1) ||
+    (height != private->height && height != -1)) {
+    _update_offscreen(window);
+  }
 
   if (width != -1)
     private->width = width;

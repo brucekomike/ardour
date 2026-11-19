@@ -67,7 +67,7 @@
 #include "pbd/openuri.h"
 #include "pbd/types_convert.h"
 #include "pbd/file_utils.h"
-#include <pbd/localtime_r.h>
+#include "pbd/localtime_r.h"
 #include "pbd/pthread_utils.h"
 #include "pbd/replace_all.h"
 #include "pbd/scoped_file_descriptor.h"
@@ -857,6 +857,7 @@ ARDOUR_UI::~ARDOUR_UI ()
 		delete secondary_clock; secondary_clock = 0;
 		delete _process_thread; _process_thread = 0;
 		delete meterbridge; meterbridge = 0;
+		delete save_as_dialog; save_as_dialog = 0;
 		delete duplicate_routes_dialog; duplicate_routes_dialog = 0;
 		delete trigger_page; trigger_page = 0;
 		delete recorder; recorder = 0;
@@ -1442,12 +1443,7 @@ ARDOUR_UI::update_timecode_format ()
 		std::shared_ptr<TimecodeTransportMaster> tcmaster;
 		std::shared_ptr<TransportMaster> tm = TransportMasterManager::instance().current();
 
-		/* it should be impossible for tm to be NULL, but there anecdotal evidence
-		 * that it can be when re-starting the engine under some circumstances.
-		 */
-		assert (tm);
-
-		if (tm && (tm->type() == LTC || tm->type() == MTC) && (tcmaster = std::dynamic_pointer_cast<TimecodeTransportMaster>(tm)) != 0 && tm->locked()) {
+		if (tm && (tm->type() == LTC || tm->type() == MTC || tm->type() == WallClock) && (tcmaster = std::dynamic_pointer_cast<TimecodeTransportMaster>(tm)) != 0 && tm->locked()) {
 			matching = (tcmaster->apparent_timecode_format() == _session->config.get_timecode_format());
 		} else {
 			matching = true;

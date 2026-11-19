@@ -560,7 +560,8 @@ Editor::nudge_forward (bool next, bool force_playhead)
 		}
 	} else if (!force_playhead && !selection->points.empty()) {
 		bool in_command = false;
-		for (auto const& pt : selection->points) {
+		for (std::list<ControlPoint*>::reverse_iterator i = selection->points.rbegin (); i != selection->points.rend (); ++i) {
+			ControlPoint* pt = *i;
 			std::shared_ptr<ARDOUR::AutomationList> alist = pt->line ().the_list ();
 			AutomationList::iterator m = pt->model ();
 			AutomationList::iterator n = m;
@@ -2495,7 +2496,7 @@ Editor::cut_copy_section (ARDOUR::SectionOperation const op)
 			break;
 		case SectionSelectRetainAndMovePlayhead:
 			_session->request_locate (op != CutPasteSection ? to_end.samples (): to.samples ());
-			/* fallthrough */
+			[[fallthrough]];
 		case SectionSelectRetain:
 			if (op == CutPasteSection || to < end) {
 				selection->set (to, to_end);
@@ -6496,7 +6497,7 @@ Editor::fade_range ()
 void
 Editor::set_fade_length (bool in)
 {
-	RegionSelection rs = get_regions_from_selection_and_entered ();
+	RegionSelection rs = get_regions_from_selection_and_edit_point ();
 
 	if (rs.empty()) {
 		return;
@@ -6510,24 +6511,21 @@ Editor::set_fade_length (bool in)
 	timecnt_t len;
 	char const * cmd;
 
-	if (pos > rv->region()->last_sample() || pos < rv->region()->first_sample()) {
-		/* edit point is outside the relevant region */
-		return;
-	}
-
 	if (in) {
 		if (pos <= rv->region()->position()) {
-			/* can't do it */
-			return;
+			/* min fade-in length */
+			len = timecnt_t (0);
+		} else {
+			len = rv->region()->position().distance (pos);
 		}
-		len = rv->region()->position().distance (pos);
 		cmd = _("set fade in length");
 	} else {
 		if (pos >= rv->region()->last_sample()) {
-			/* can't do it */
-			return;
+			/* min fade-out length */
+			len = timecnt_t (0);
+		} else {
+			len = pos.distance (rv->region()->nt_last());
 		}
-		len = pos.distance (rv->region()->nt_last());
 		cmd = _("set fade out length");
 	}
 
@@ -9684,13 +9682,18 @@ Editor::get_quantize_op ()
 {
 	EC_LOCAL_TEMPO_SCOPE;
 
-	QuantizeWidget* qw (_midi_inspector->quantize_widget);
+	if (_the_notebook.get_current_page() == _the_notebook.page_num (*midi_inspector_scrolled_window)) {
 
-	return new Quantize (qw->snap_start(),
-	                     qw->snap_end(),
-	                     qw->start_grid_size(),
-	                     qw->end_grid_size(),
-	                     qw->strength(),
-	                     qw->swing(),
-	                     qw->threshold());
+		QuantizeWidget* qw (_midi_inspector->quantize_widget);
+
+		return new Quantize (qw->snap_start(),
+		                     qw->snap_end(),
+		                     qw->start_grid_size(),
+		                     qw->end_grid_size(),
+		                     qw->strength(),
+		                     qw->swing(),
+		                     qw->threshold());
+	}
+
+	return EditingContext::get_quantize_op ();
 }

@@ -1046,6 +1046,7 @@ ARDOUR::get_available_sync_options ()
 	ret.push_back (MTC);
 	ret.push_back (MIDIClock);
 	ret.push_back (LTC);
+	ret.push_back (WallClock);
 
 	return ret;
 }
@@ -1152,3 +1153,8 @@ ARDOUR::AnyTime::str() const
 	return ss.str ();
 }
 
+void
+ARDOUR::surface_callback (bool only_once, SurfaceCallbackType type, void* arg)
+{
+	ControlProtocolManager::instance().do_surface_callback (only_once, type, arg);
+}

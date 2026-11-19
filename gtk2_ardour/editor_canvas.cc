@@ -46,6 +46,7 @@
 #include "canvas/debug.h"
 
 #include "ardour_ui.h"
+#include "audio_region_view.h"
 #include "automation_time_axis.h"
 #include "control_point.h"
 #include "editor.h"
@@ -86,7 +87,6 @@ Editor::initialize_canvas ()
 	_track_canvas = _track_canvas_viewport->canvas ();
 
 	_track_canvas->set_background_color (UIConfiguration::instance().color ("arrange base"));
-	_track_canvas->use_nsglview (UIConfiguration::instance().get_nsgl_view_mode () == NSGLHiRes);
 #ifdef __APPLE__
 	// as of april 12 2024 on X Window and Windows, setting this to false
 	// causes redraw errors, but not on macOS as far as we can tell
@@ -204,6 +204,9 @@ Editor::initialize_canvas ()
 	ruler_separator->show();
 
 	ARDOUR_UI::instance()->video_timeline = new VideoTimeLine(this, videotl_group, (timebar_height * videotl_bar_height));
+
+	/* after vidoe-tools message */
+	BootMessage (_("Setting up Editor Canvas"));
 
 	range_bar_drag_rect = new ArdourCanvas::Rectangle (range_marker_group, ArdourCanvas::Rect (0.0, 0.0, 100, timebar_height));
 	CANVAS_DEBUG_NAME (range_bar_drag_rect, "range drag");
@@ -493,12 +496,12 @@ Editor::track_canvas_drag_data_received (const RefPtr<Gdk::DragContext>& context
 bool
 Editor::idle_drop_paths (vector<string> paths, timepos_t pos, double ypos, bool copy)
 {
-	drop_paths_part_two (paths, pos, ypos, copy);
+	drop_paths_part_two (paths, pos, ypos, copy, false);
 	return false;
 }
 
 void
-Editor::drop_paths_part_two (const vector<string>& paths, timepos_t const & p, double ypos, bool copy)
+Editor::drop_paths_part_two (const vector<string>& paths, timepos_t const & p, double ypos, bool copy, bool transient)
 {
 	RouteTimeAxisView* tv;
 	timepos_t pos (p);
@@ -525,13 +528,13 @@ Editor::drop_paths_part_two (const vector<string>& paths, timepos_t const & p, d
 		/* drop onto canvas background: create new tracks */
 
 		InstrumentSelector is(InstrumentSelector::ForTrackDefault); // instantiation builds instrument-list and sets default.
-	        do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, is.selected_instrument());
+		do_import (midi_paths, Editing::ImportDistinctFiles, ImportAsTrack, SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, is.selected_instrument());
 
 		if (UIConfiguration::instance().get_only_copy_imported_files() || copy) {
 			do_import (audio_paths, Editing::ImportDistinctFiles, Editing::ImportAsTrack,
 			           SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos);
 		} else {
-			do_embed (audio_paths, Editing::ImportDistinctFiles, ImportAsTrack, pos);
+			do_embed (audio_paths, Editing::ImportDistinctFiles, ImportAsTrack, transient, pos);
 		}
 
 	} else if ((tv = dynamic_cast<RouteTimeAxisView*> (tvp.first)) != 0) {
@@ -546,7 +549,7 @@ Editor::drop_paths_part_two (const vector<string>& paths, timepos_t const & p, d
 				do_import (audio_paths, Editing::ImportSerializeFiles, Editing::ImportToTrack,
 					   SrcBest, SMFFileAndTrackName, SMFTempoIgnore, pos, std::shared_ptr<PluginInfo>(), tv->track ());
 			} else {
-				do_embed (audio_paths, Editing::ImportSerializeFiles, ImportToTrack, pos, std::shared_ptr<ARDOUR::PluginInfo>(), tv->track ());
+				do_embed (audio_paths, Editing::ImportSerializeFiles, ImportToTrack, transient, pos, std::shared_ptr<ARDOUR::PluginInfo>(), tv->track ());
 			}
 		}
 	}
@@ -581,7 +584,7 @@ Editor::drop_paths (const RefPtr<Gdk::DragContext>& context,
 		*/
 		Glib::signal_idle().connect (sigc::bind (sigc::mem_fun (*this, &Editor::idle_drop_paths), paths, when, cy, copy));
 #else
-		drop_paths_part_two (paths, when, cy, copy);
+		drop_paths_part_two (paths, when, cy, copy, false);
 #endif
 	}
 
@@ -605,6 +608,9 @@ Editor::maybe_autoscroll (bool allow_horiz, bool allow_vert, bool from_headers)
 	if (!UIConfiguration::instance().get_autoscroll_editor () || autoscroll_active ()) {
 		return;
 	}
+
+	allow_vert = autoscroll_vertical_allowed && allow_vert;
+	allow_horiz = autoscroll_horizontal_allowed && allow_horiz;
 
 	/* define a rectangular boundary for scrolling. If the mouse moves
 	 * outside of this area and/or continue to be outside of this area,
@@ -765,7 +771,7 @@ Editor::autoscroll_canvas ()
 	VisualChange vc;
 	bool vertical_motion = false;
 
-	if (autoscroll_horizontal_allowed) {
+	if (autoscroll_horizontal_active) {
 
 		samplepos_t new_sample = _leftmost_sample;
 
@@ -813,7 +819,7 @@ Editor::autoscroll_canvas ()
 		}
 	}
 
-	if (autoscroll_vertical_allowed) {
+	if (autoscroll_vertical_active) {
 
 		// const double vertical_pos = vertical_adjustment.get_value();
 		const int speed_factor = 10;
@@ -913,7 +919,7 @@ Editor::autoscroll_canvas ()
 		 * move back to zero
 		 */
 
-		if (autoscroll_horizontal_allowed) {
+		if (autoscroll_horizontal_active) {
 			x = min (max ((ArdourCanvas::Coord) x, 0.0), autoscroll_boundary.x1);
 		} else {
 			x = min (max ((ArdourCanvas::Coord) x, autoscroll_boundary.x0), autoscroll_boundary.x1);
@@ -948,8 +954,8 @@ Editor::start_canvas_autoscroll (bool allow_horiz, bool allow_vert, const Ardour
 
 	stop_canvas_autoscroll ();
 
-	autoscroll_horizontal_allowed = allow_horiz;
-	autoscroll_vertical_allowed = allow_vert;
+	autoscroll_horizontal_active = allow_horiz;
+	autoscroll_vertical_active = allow_vert;
 	autoscroll_boundary = boundary;
 
 	/* do the first scroll right now
@@ -1411,6 +1417,12 @@ Editor::which_canvas_cursor(ItemType type) const
 			break;
 		case NoteItem:
 			cursor = _cursors->grabber_note;
+		case VelocityItem:
+			cursor = _cursors->up_down;
+			break;
+		case VelocityBaseItem:
+			cursor = _cursors->grabber;
+			break;
 		default:
 			break;
 		}
@@ -1430,6 +1442,38 @@ Editor::which_canvas_cursor(ItemType type) const
 			break;
 		case NoteItem:
 			cursor = _cursors->grabber_note;
+			break;
+		case SelectionItem:
+			{
+				/* Indicate if AutomationRangeDrag is possible */
+				double x, y;
+				get_pointer_position (x, y);
+				pair<TimeAxisView*, int> tvp = trackview_by_y_position (y, false);
+
+				if (dynamic_cast<AutomationTimeAxisView*> (tvp.first)) {
+					/* automation track */
+					cursor = _cursors->up_down;
+				} else if (tvp.first) {
+					/* audio region fx line */
+					RegionSelection regions;
+					TrackViewList tracks;
+					samplepos_t sample;
+					bool in_track_canvas; /* ignored */
+
+					tracks.push_back(tvp.first);
+					mouse_sample (sample, in_track_canvas);
+					timepos_t where (sample);
+					get_regions_at (regions, where, tracks);
+
+					if (!regions.empty () && dynamic_cast<AudioRegionView*> (regions.front ())) {
+						cursor = _cursors->up_down;
+					}
+				}
+				break;
+			}
+		case VelocityItem:
+			cursor = _cursors->up_down;
+			break;
 		default:
 			break;
 		}

@@ -723,10 +723,10 @@ Session::schedule_butler_for_transport_work ()
 }
 
 bool
-Session::maybe_stop (samplepos_t limit)
+Session::maybe_stop (samplepos_t limit, pframes_t n_samples)
 {
 	ENSURE_PROCESS_THREAD;
-	if ((_transport_fsm->transport_speed() > 0.0f && _transport_sample >= limit) || (_transport_fsm->transport_speed() < 0.0f && _transport_sample == 0)) {
+	if ((_transport_fsm->transport_speed() > 0.0f && _transport_sample <= limit && _transport_sample + n_samples > limit) || (_transport_fsm->transport_speed() < 0.0f && _transport_sample == 0)) {
 		if (synced_to_engine ()) {
 			_engine.transport_stop ();
 		} else {
@@ -2004,6 +2004,8 @@ Session::route_processors_changed (RouteProcessorChange c)
 	if (c.type == RouteProcessorChange::NoProcessorChange) {
 		return;
 	}
+
+	RouteProcessorsChanged (c); /* EMIT SIGNAL */
 
 	if (c.type & RouteProcessorChange::MeterPointChange) {
 		/* sort rec-armed routes to be processed first */
