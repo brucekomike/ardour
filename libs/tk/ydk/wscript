@@ -178,6 +178,9 @@ def build(bld):
     obj.defines         = [ 'HAVE_CONFIG_H', '_LARGEFILE64_SOURCE', '_REENTRANT', 'G_LOG_DOMAIN="Gdk"', 'GDK_COMPILATION', '_FILE_OFFSET_BITS=64',
                             'GDK_PIXBUF_DISABLE_DEPRECATED', 'G_DISABLE_CAST_CHECKS',
                             'G_DISABLE_SINGLE_INCLUDES', 'ATK_DISABLE_SINGLE_INCLUDES', 'GDK_PIXBUF_DISABLE_SINGLE_INCLUDES']
+    if sys.platform == 'darwin':
+        obj.defines += [ 'DISABLE_VISIBILITY' ]
+
     obj.vnum            = LIBYDK_VERSION
     obj.install_path    = bld.env['LIBDIR']
 
